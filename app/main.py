@@ -1,19 +1,22 @@
 """FastAPI REST layer: validation, error handling, and routes."""
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
-
-from app import rag
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+from app import db, rag
 from app.config import get_settings
 from app.errors import ConfigError, DocumentLoadError, LLMError, UnsupportedFileType
 from app.loader import SUPPORTED_EXTENSIONS
 from app.schemas import (
     DeleteResponse,
+    DocumentInfo,
     DocumentList,
+    HistoryItem,
+    HistoryList,
     QueryRequest,
     QueryResponse,
     UploadResponse,
@@ -29,6 +32,7 @@ async def lifespan(_: FastAPI):
     s = get_settings()
     s.upload_dir.mkdir(parents=True, exist_ok=True)
     s.chroma_dir.mkdir(parents=True, exist_ok=True)
+    db.init_db()
     yield
 
 
@@ -73,7 +77,12 @@ def _safe_filename(name: str | None) -> str:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+STATIC_DIR = Path(__file__).parent / "static"
 
+
+@app.get("/", include_in_schema=False)
+def index():
+    return FileResponse(STATIC_DIR / "index.html")
 
 @app.post("/documents", response_model=UploadResponse, status_code=201)
 def upload_document(file: UploadFile = File(...)):
@@ -101,19 +110,33 @@ def upload_document(file: UploadFile = File(...)):
     except Exception:
         dest.unlink(missing_ok=True)  # don't keep files we failed to index
         raise
+    db.save_document(filename, len(content), count)
     return UploadResponse(filename=filename, chunks_indexed=count, replaced_existing=replaced)
 
 
 @app.get("/documents", response_model=DocumentList)
 def get_documents():
-    return DocumentList(documents=list_sources())
+    meta = db.documents_by_name()
+    docs = []
+    for item in list_sources():
+        rec = meta.get(item["source"], {})
+        docs.append(
+            DocumentInfo(
+                source=item["source"],
+                chunks=item["chunks"],
+                size_bytes=rec.get("size_bytes"),
+                uploaded_at=rec.get("uploaded_at"),
+            )
+        )
+    return DocumentList(documents=docs)
 
 
 @app.delete("/documents/{filename}", response_model=DeleteResponse)
 def remove_document(filename: str):
     name = _safe_filename(filename)
     removed = delete_source(name)
-    if removed == 0:
+    had_record = db.delete_document(name)
+    if removed == 0 and not had_record:
         raise HTTPException(status_code=404, detail=f"No indexed document named '{name}'.")
     (get_settings().upload_dir / name).unlink(missing_ok=True)
     return DeleteResponse(filename=name, chunks_removed=removed)
@@ -121,4 +144,28 @@ def remove_document(filename: str):
 
 @app.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest):
-    return rag.answer_question(req.question, req.top_k)
+    start = time.perf_counter()
+    result = rag.answer_question(req.question, req.top_k)
+    result.latency_ms = int((time.perf_counter() - start) * 1000)
+    try:  # history is a nice-to-have: never fail the answer because of it
+        db.log_query(
+            req.question,
+            result.answer,
+            result.grounded,
+            [src.model_dump() for src in result.sources],
+            result.latency_ms,
+        )
+    except Exception:
+        log.exception("Could not save query to history")
+    return result
+
+
+@app.get("/history", response_model=HistoryList)
+def get_history(limit: int = Query(20, ge=1, le=200)):
+    """Most recent questions first."""
+    return HistoryList(items=[HistoryItem(**row) for row in db.list_history(limit)])
+
+
+@app.delete("/history")
+def clear_history():
+    return {"deleted": db.clear_history()}

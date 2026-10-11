@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     collection_name: str = "documents"
     max_upload_mb: int = 20
 
+    # Relational database for document records + query history.
+    # SQLite by default (zero setup). For PostgreSQL:
+    #   DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/ragdb
+    database_url: str = "sqlite:///data/app.db"
+
 
 @lru_cache
 def get_settings() -> Settings:

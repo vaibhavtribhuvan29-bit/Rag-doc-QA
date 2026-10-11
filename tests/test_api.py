@@ -33,3 +33,16 @@ def test_upload_rejects_empty_file():
     with TestClient(app) as client:
         r = client.post("/documents", files={"file": ("empty.txt", b"", "text/plain")})
         assert r.status_code == 400
+
+
+
+def test_history_endpoint_returns_list():
+    with TestClient(app) as client:
+        r = client.get("/history?limit=5")
+        assert r.status_code == 200
+        assert isinstance(r.json()["items"], list)
+
+
+def test_history_limit_validation():
+    with TestClient(app) as client:
+        assert client.get("/history?limit=0").status_code == 422

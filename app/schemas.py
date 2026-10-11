@@ -1,4 +1,6 @@
 """Pydantic request/response models (request validation lives here)."""
+from datetime import datetime
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -26,6 +28,7 @@ class QueryResponse(BaseModel):
     answer: str
     grounded: bool = Field(..., description="False when no relevant context was found")
     sources: list[SourceChunk]
+    latency_ms: int | None = None
 
 
 class UploadResponse(BaseModel):
@@ -37,6 +40,8 @@ class UploadResponse(BaseModel):
 class DocumentInfo(BaseModel):
     source: str
     chunks: int
+    size_bytes: int | None = None
+    uploaded_at: datetime | None = None
 
 
 class DocumentList(BaseModel):
@@ -46,3 +51,17 @@ class DocumentList(BaseModel):
 class DeleteResponse(BaseModel):
     filename: str
     chunks_removed: int
+
+
+class HistoryItem(BaseModel):
+    id: int
+    question: str
+    answer: str
+    grounded: bool
+    sources: list[SourceChunk]
+    latency_ms: int | None = None
+    created_at: datetime
+
+
+class HistoryList(BaseModel):
+    items: list[HistoryItem]
